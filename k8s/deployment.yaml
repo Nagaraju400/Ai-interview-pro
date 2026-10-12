@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-interview-platform
+  labels:
+    app: ai-interview-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai-interview-platform
+  template:
+    metadata:
+      labels:
+        app: ai-interview-platform
+    spec:
+      containers:
+      - name: nextjs-app
+        image: your-docker-registry/ai-interview-platform:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3000
+        envFrom:
+        - secretRef:
+            name: ai-interview-secrets
+        resources:
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 15

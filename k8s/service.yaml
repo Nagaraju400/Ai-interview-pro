@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-interview-service
+  labels:
+    app: ai-interview-platform
+spec:
+  type: LoadBalancer
+  sessionAffinity: ClientIP
+  ports:
+  - name: http
+    port: 80
+    targetPort: 3000
+    protocol: TCP
+  - name: https
+    port: 443
+    targetPort: 3000
+    protocol: TCP
+  selector:
+    app: ai-interview-platform
