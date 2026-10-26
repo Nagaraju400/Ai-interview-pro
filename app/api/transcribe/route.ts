@@ -1,30 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { OpenAI } from "openai";
+import { OpenAI, toFile } from "openai";
 import { GoogleGenAI } from "@google/genai";
-import { createServerClient } from "@supabase/ssr";
-import { cookies } from "next/headers";
+import { createClient } from "@/utils/supabase/server";
 
 export async function POST(req: NextRequest) {
   try {
     // Authenticate candidate session
-    const cookieStore = await cookies();
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          getAll: () => cookieStore.getAll(),
-          setAll: (cookiesToSet) => {
-            cookiesToSet.forEach(({ name, value, options }) => {
-              cookieStore.set(name, value, options);
-            });
-          },
-        },
-      }
-    );
-
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
       return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
     }
 
@@ -78,17 +62,28 @@ export async function POST(req: NextRequest) {
           apiKey: groqKey,
         });
 
-        // Convert Buffer to Uint8Array File object compatible with OpenAI SDK
-        const file = new File([new Uint8Array(audioBuffer)], "recording.webm", { type: mimeType });
+        const file = await toFile(audioBuffer, "recording.webm", { type: mimeType });
 
-        const transcription = await openai.audio.transcriptions.create({
-          file: file,
-          model: "whisper-large-v3",
-          response_format: "text",
-          temperature: 0.0,
-        });
+        try {
+          const transcription = await openai.audio.transcriptions.create({
+            file: file,
+            model: "whisper-large-v3",
+            response_format: "text",
+            temperature: 0.0,
+          });
 
-        transcript = typeof transcription === "string" ? transcription : (transcription as any).text || "";
+          transcript = typeof transcription === "string" ? transcription : (transcription as any).text || "";
+        } catch (whisperErr: any) {
+          console.warn("Groq whisper-large-v3 attempt note, retrying with whisper-large-v3-turbo...", whisperErr?.message || whisperErr);
+          const transcription = await openai.audio.transcriptions.create({
+            file: file,
+            model: "whisper-large-v3-turbo",
+            response_format: "text",
+            temperature: 0.0,
+          });
+          transcript = typeof transcription === "string" ? transcription : (transcription as any).text || "";
+        }
+
         if (transcript.trim()) {
           return NextResponse.json({ success: true, transcript: transcript.trim(), engine: "groq-whisper" });
         }
@@ -99,29 +94,32 @@ export async function POST(req: NextRequest) {
 
     // Strategy 2: Fallback to Google Gemini Audio processing
     if (isGeminiValid) {
-      try {
-        const ai = new GoogleGenAI({ apiKey: geminiKey });
-        const base64Audio = audioBuffer.toString("base64");
+      const geminiAudioModels = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-2.5-flash"];
+      const base64Audio = audioBuffer.toString("base64");
 
-        const response = await ai.models.generateContent({
-          model: "gemini-2.5-flash",
-          contents: [
-            {
-              inlineData: {
-                mimeType: mimeType.includes("mp4") ? "audio/mp4" : mimeType.includes("wav") ? "audio/wav" : "audio/webm",
-                data: base64Audio,
+      for (const modelName of geminiAudioModels) {
+        try {
+          const ai = new GoogleGenAI({ apiKey: geminiKey });
+          const response = await ai.models.generateContent({
+            model: modelName,
+            contents: [
+              {
+                inlineData: {
+                  mimeType: mimeType.includes("mp4") ? "audio/mp4" : mimeType.includes("wav") ? "audio/wav" : "audio/webm",
+                  data: base64Audio,
+                },
               },
-            },
-            "Transcribe the spoken voice in this audio clip accurately. Output ONLY the raw transcribed text. Do NOT add any extra commentary, quotation marks, or markdown formatting.",
-          ],
-        });
+              "Transcribe the spoken voice in this audio clip accurately. Output ONLY the raw transcribed text. Do NOT add any extra commentary, quotation marks, or markdown formatting.",
+            ],
+          });
 
-        if (response.text) {
-          transcript = response.text.trim();
-          return NextResponse.json({ success: true, transcript, engine: "gemini-audio" });
+          if (response.text && response.text.trim()) {
+            transcript = response.text.trim();
+            return NextResponse.json({ success: true, transcript, engine: `gemini-${modelName}` });
+          }
+        } catch (err: any) {
+          console.warn(`Gemini Audio STT (${modelName}) note:`, err?.message || err);
         }
-      } catch (err: any) {
-        console.warn("Gemini Audio STT note: Request failed.", err?.message || err);
       }
     }
 

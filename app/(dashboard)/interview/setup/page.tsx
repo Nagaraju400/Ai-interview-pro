@@ -63,12 +63,29 @@ export default function InterviewSetupPage() {
   // Fetch Candidate Resume Profile on mount
   useEffect(() => {
     async function fetchResumeProfile() {
+      // 1. Instantly hydrate from client cache if available
+      try {
+        const cached = localStorage.getItem("candidate_resume");
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed && (parsed.parsedData || parsed.skills)) {
+            setResumeInfo(parsed);
+          }
+        }
+      } catch (cacheErr) {
+        console.warn("Client resume cache note:", cacheErr);
+      }
+
+      // 2. Sync with server database profile
       try {
         const res = await fetch("/api/resume");
         if (res.ok) {
           const data = await res.json();
           if (data.hasResume && data.resume) {
             setResumeInfo(data.resume);
+            try {
+              localStorage.setItem("candidate_resume", JSON.stringify(data.resume));
+            } catch {}
           }
         }
       } catch (err) {
@@ -188,7 +205,12 @@ export default function InterviewSetupPage() {
       const res = await fetch("/api/interview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: role.trim(), interviewType, company: company.trim() || undefined }),
+        body: JSON.stringify({ 
+          role: role.trim(), 
+          interviewType, 
+          company: company.trim() || undefined,
+          resume: resumeInfo
+        }),
       });
 
       const data = await res.json();

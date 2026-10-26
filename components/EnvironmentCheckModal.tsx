@@ -2,9 +2,10 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { CheckCircle2, Camera, ShieldAlert, Volume2, Users, Sparkles, X, Mic, MicOff } from "lucide-react";
+import { CheckCircle2, Camera, ShieldAlert, Volume2, Users, Sparkles, X, Mic, MicOff, Play, Square } from "lucide-react";
 import Webcam from "react-webcam";
 import { motion, AnimatePresence } from "framer-motion";
+import { speakAIText, stopAIVoice } from "@/lib/ai-voice";
 
 interface EnvironmentCheckModalProps {
   isOpen: boolean;
@@ -35,6 +36,29 @@ export function EnvironmentCheckModal({ isOpen, onConfirm, roleName, companyName
   const [micVolume, setMicVolume] = useState<number>(0);
   const [micTestedOk, setMicTestedOk] = useState<boolean>(false);
   const [micError, setMicError] = useState<string | null>(null);
+
+  // Interactive AI Speaker Testing State
+  const [isTestingSpeaker, setIsTestingSpeaker] = useState(false);
+  const [speakerTestedOk, setSpeakerTestedOk] = useState(false);
+
+  const testSpeakerLive = async () => {
+    if (isTestingSpeaker) {
+      stopAIVoice();
+      setIsTestingSpeaker(false);
+      return;
+    }
+    setIsTestingSpeaker(true);
+    await speakAIText({
+      text: "Speaker check passed. Your AI interviewer voice is configured and ready.",
+      onStart: () => setIsTestingSpeaker(true),
+      onEnd: () => {
+        setIsTestingSpeaker(false);
+        setSpeakerTestedOk(true);
+        setCheckedItems((prev) => ({ ...prev, hardwareWorking: true }));
+      },
+      onError: () => setIsTestingSpeaker(false),
+    });
+  };
 
   const webcamRef = useRef<Webcam>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
@@ -110,6 +134,7 @@ export function EnvironmentCheckModal({ isOpen, onConfirm, roleName, companyName
   useEffect(() => {
     return () => {
       stopMicTest();
+      stopAIVoice();
     };
   }, []);
 
@@ -368,28 +393,59 @@ export function EnvironmentCheckModal({ isOpen, onConfirm, roleName, companyName
                     </div>
                   </div>
 
-                  {/* Interactive Live Mic Test Button */}
-                  {isTestingMic ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={stopMicTest}
-                      className="h-7 text-[11px] px-2.5 bg-red-500/10 text-red-500 border-red-500/30 cursor-pointer"
-                    >
-                      <MicOff className="w-3 h-3 mr-1" /> Stop Test
-                    </Button>
-                  ) : (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {/* Interactive AI Speaker Test Button */}
                     <Button
                       type="button"
                       size="sm"
                       variant="secondary"
-                      onClick={testMicrophoneLive}
-                      className="h-7 text-[11px] px-2.5 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 border border-cyan-500/30 cursor-pointer"
+                      onClick={testSpeakerLive}
+                      className={`h-7 text-[11px] px-2.5 border cursor-pointer ${
+                        isTestingSpeaker
+                          ? "bg-amber-500/10 text-amber-500 border-amber-500/30"
+                          : speakerTestedOk
+                          ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/30"
+                          : "bg-purple-500/10 hover:bg-purple-500/20 text-purple-600 dark:text-purple-400 border-purple-500/30"
+                      }`}
                     >
-                      <Mic className="w-3 h-3 mr-1" /> Test Mic Live
+                      {isTestingSpeaker ? (
+                        <>
+                          <Square className="w-3 h-3 mr-1 fill-current" /> Stop Voice
+                        </>
+                      ) : (
+                        <>
+                          <Volume2 className="w-3 h-3 mr-1" /> {speakerTestedOk ? "✓ Voice Verified" : "Test AI Voice"}
+                        </>
+                      )}
                     </Button>
-                  )}
+
+                    {/* Interactive Live Mic Test Button */}
+                    {isTestingMic ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={stopMicTest}
+                        className="h-7 text-[11px] px-2.5 bg-red-500/10 text-red-500 border-red-500/30 cursor-pointer"
+                      >
+                        <MicOff className="w-3 h-3 mr-1" /> Stop Mic
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={testMicrophoneLive}
+                        className={`h-7 text-[11px] px-2.5 border cursor-pointer ${
+                          micTestedOk
+                            ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/30"
+                            : "bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 border border-cyan-500/30"
+                        }`}
+                      >
+                        <Mic className="w-3 h-3 mr-1" /> {micTestedOk ? "✓ Mic Verified" : "Test Mic Live"}
+                      </Button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Live Mic Volume Level Meter Bar */}

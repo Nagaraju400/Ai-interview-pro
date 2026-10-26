@@ -37,14 +37,8 @@ export function AudioVisualizer({ isRecording, stream: customStream }: AudioVisu
     const setupAudio = async () => {
       try {
         if (!activeStream) {
-          ownStreamRef.current = await navigator.mediaDevices.getUserMedia({
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
-            },
-          });
-          activeStream = ownStreamRef.current;
+          // If no custom stream provided, show active animation without opening competing hardware mic streams
+          return;
         }
 
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;

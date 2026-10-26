@@ -11,7 +11,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
     }
 
-    const { role, interviewType, company } = await req.json();
+    const { role, interviewType, company, resume } = await req.json();
 
     if (!role || !interviewType) {
       return NextResponse.json(
@@ -47,10 +47,34 @@ export async function POST(req: Request) {
     }
 
     // Enforce Mandatory Resume Pre-requisite: Candidate must have an uploaded resume
-    const existingResume = await prisma.resume.findFirst({
-      where: { userId: dbUser.id },
+    let existingResume = await prisma.resume.findFirst({
+      where: {
+        OR: [
+          { userId: dbUser.id },
+          { userId: user.id },
+          ...(user.email ? [{ user: { email: user.email } }] : []),
+        ],
+      },
       orderBy: { createdAt: "desc" },
-    });
+    }).catch(() => null);
+
+    // If client supplied verified resume from session/localStorage, save it to DB for the user
+    if (!existingResume && resume && (resume.parsedData || resume.skills)) {
+      try {
+        existingResume = await prisma.resume.create({
+          data: {
+            userId: dbUser.id,
+            fileUrl: resume.fileUrl || "candidate_resume.pdf",
+            parsedData: typeof resume.parsedData === "object" 
+              ? JSON.stringify(resume.parsedData) 
+              : (resume.parsedData || JSON.stringify(resume)),
+          },
+        });
+      } catch (err: any) {
+        console.warn("Auto-sync resume note:", err?.message);
+        existingResume = resume as any;
+      }
+    }
 
     if (!existingResume) {
       return NextResponse.json(

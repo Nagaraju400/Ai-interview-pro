@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Bot, User, Send, StopCircle, Code2, Mic, Activity, Clock, Building2, Volume2, VolumeX, ArrowDown, ShieldAlert, Play, Terminal, AlertTriangle, ZoomIn, ZoomOut, Maximize2, Minimize2, Expand, Shrink, Text, Camera, CheckCircle2, UserCheck, UserX } from "lucide-react";
+import { Bot, User, Send, StopCircle, Code2, Mic, Activity, Clock, Building2, Volume2, VolumeX, ArrowDown, ShieldAlert, Play, Terminal, AlertTriangle, ZoomIn, ZoomOut, Maximize2, Minimize2, Expand, Shrink, Text, Camera, CheckCircle2, UserCheck, UserX, Square, Settings2, RotateCcw } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import { AIAvatar } from "@/components/AIAvatar";
@@ -14,6 +14,8 @@ import { TypewriterText } from "@/components/TypewriterText";
 import { SpellCheckKeywords } from "@/components/SpellCheckKeywords";
 import { playSubmitSound, playQuestionSound } from "@/lib/sounds";
 import { verifyCandidateIdentity } from "@/utils/face-comparison";
+import { speakAIText, stopAIVoice, loadVoiceSettings, VoiceSettings } from "@/lib/ai-voice";
+import { AIVoiceSettings } from "@/components/AIVoiceSettings";
 
 import Editor from "react-simple-code-editor";
 import Prism from "prismjs";
@@ -95,6 +97,12 @@ export default function InterviewChatPage() {
     return true;
   });
 
+  const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>(() => loadVoiceSettings());
+  const [isVoiceSettingsOpen, setIsVoiceSettingsOpen] = useState(false);
+  const [speakingMessageIndex, setSpeakingMessageIndex] = useState<number | null>(null);
+  const [audioAutoplayBlocked, setAudioAutoplayBlocked] = useState(false);
+  const firstQuestionTextRef = useRef<string | null>(null);
+
   const [candidatePhoto, setCandidatePhoto] = useState<string | null>(() => {
     if (typeof window !== "undefined") {
       return sessionStorage.getItem(`candidate_photo_${interviewId}`) || sessionStorage.getItem("candidate_reference_photo") || null;
@@ -117,6 +125,14 @@ export default function InterviewChatPage() {
       }
     }
     setShowEnvCheckModal(false);
+
+    // USER GESTURE TRIGGER: Speak the active question immediately upon entering interview!
+    if (firstQuestionTextRef.current) {
+      const qText = firstQuestionTextRef.current;
+      setTimeout(() => {
+        speak(qText);
+      }, 200);
+    }
   };
 
   const recaptureCandidatePhoto = () => {
@@ -262,6 +278,10 @@ export default function InterviewChatPage() {
       clearTimeout(speakingTimeoutRef.current);
       speakingTimeoutRef.current = null;
     }
+    if (recognitionRestartTimeoutRef.current) {
+      clearTimeout(recognitionRestartTimeoutRef.current);
+      recognitionRestartTimeoutRef.current = null;
+    }
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
@@ -271,17 +291,25 @@ export default function InterviewChatPage() {
       intervalRef.current = null;
     }
     if (recognitionRef.current) {
-      try { recognitionRef.current.stop(); } catch (e) {}
+      try {
+        recognitionRef.current.onend = null;
+        recognitionRef.current.onerror = null;
+        recognitionRef.current.stop();
+      } catch (e) {}
+      recognitionRef.current = null;
     }
     if (activeMicStreamRef.current) {
       activeMicStreamRef.current.getTracks().forEach((t) => t.stop());
       activeMicStreamRef.current = null;
+      setActiveMicStream(null);
     }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       try { mediaRecorderRef.current.stop(); } catch (e) {}
       mediaRecorderRef.current = null;
     }
+    stopAIVoice();
     setIsSpeaking(false);
+    setSpeakingMessageIndex(null);
     setIsRecording(false);
     isRecordingRef.current = false;
   };
@@ -298,14 +326,13 @@ export default function InterviewChatPage() {
       const next = !prev;
       isMutedRef.current = next;
       if (next) {
-        if (typeof window !== "undefined" && window.speechSynthesis) {
-          window.speechSynthesis.cancel();
-        }
+        stopAIVoice();
         if (audioRef.current) {
           audioRef.current.pause();
           audioRef.current = null;
         }
         setIsSpeaking(false);
+        setSpeakingMessageIndex(null);
       }
       return next;
     });
@@ -326,94 +353,57 @@ export default function InterviewChatPage() {
   const [micPermissionError, setMicPermissionError] = useState<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const [activeMicStream, setActiveMicStream] = useState<MediaStream | null>(null);
   const activeMicStreamRef = useRef<MediaStream | null>(null);
   const [transcript, setTranscript] = useState("");
   const [expressionData, setExpressionData] = useState<{happy: number, neutral: number, sad: number, fearful: number, angry: number, surprised: number}>({ happy: 0, neutral: 0, sad: 0, fearful: 0, angry: 0, surprised: 0 });
   const [currentExpressions, setCurrentExpressions] = useState<{happy: number, neutral: number, sad: number, fearful: number, angry: number, surprised: number} | null>(null);
   const [frameCounts, setFrameCounts] = useState(0);
   const recognitionRef = useRef<any>(null);
+  const recognitionRestartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const finalTranscriptRef = useRef<string>("");
   const speakingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const speakStandardMaleAiVoice = (cleanText: string) => {
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-      if (speakingTimeoutRef.current) clearTimeout(speakingTimeoutRef.current);
-
-      const utterance = new SpeechSynthesisUtterance(cleanText);
-      utterance.rate = 0.98; // Natural conversational speed
-      utterance.pitch = 0.95; // Deep male AI interviewer voice pitch
-
-      const handleSpeechEnd = () => {
-        setIsSpeaking(false);
-        if (speakingTimeoutRef.current) clearTimeout(speakingTimeoutRef.current);
-      };
-
-      utterance.onend = handleSpeechEnd;
-      utterance.onerror = handleSpeechEnd;
-
-      // Auto-unlock recording privileges if speech finishes or after estimated duration
-      const estimatedDurationMs = Math.min(16000, Math.max(3000, cleanText.length * 75));
-      speakingTimeoutRef.current = setTimeout(() => {
-        setIsSpeaking(false);
-      }, estimatedDurationMs);
-
-      const selectMaleVoiceAndSpeak = () => {
-        const voices = window.speechSynthesis.getVoices();
-        const enVoices = voices.filter(v => v.lang.startsWith("en"));
-        
-        // Priority ranking for natural standard male AI voices across Chrome, Edge, Safari & OS
-        const maleVoice = 
-          enVoices.find(v => v.name.includes("Natural") && (v.name.includes("Guy") || v.name.includes("Christopher") || v.name.includes("Eric") || v.name.includes("Ryan") || v.name.toLowerCase().includes("adam") || v.name.includes("Brian"))) ||
-          enVoices.find(v => (v.name.includes("Microsoft") || v.name.includes("Google")) && (v.name.includes("Guy") || v.name.includes("David") || v.name.includes("Mark") || v.name.includes("Male") || v.name.includes("George"))) ||
-          enVoices.find(v => v.name.includes("Male") || v.name.includes("David") || v.name.includes("Alex") || v.name.includes("Daniel") || v.name.includes("Arthur")) ||
-          enVoices.find(v => v.lang === "en-US" || v.lang === "en-GB") ||
-          enVoices[0];
-
-        if (maleVoice) {
-          utterance.voice = maleVoice;
-        }
-        window.speechSynthesis.speak(utterance);
-      };
-
-      if (window.speechSynthesis.getVoices().length > 0) {
-        selectMaleVoiceAndSpeak();
-      } else {
-        window.speechSynthesis.onvoiceschanged = () => {
-          selectMaleVoiceAndSpeak();
-          window.speechSynthesis.onvoiceschanged = null;
-        };
-      }
-    } else {
-      setIsSpeaking(false);
-    }
-  };
-
-  const speak = (text: string) => {
-    if (!text || isMutedRef.current) return;
-    
-    // Clean up previous speech playback
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-    }
+  const stopSpeaking = () => {
+    stopAIVoice();
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
     }
+    setIsSpeaking(false);
+    setSpeakingMessageIndex(null);
+  };
 
-    const cleanText = text
-      .replace(/PART\s*\d+:?/gi, "")
-      .replace(/Accuracy Check:?/gi, "")
-      .replace(/Evaluation:?/gi, "")
-      .replace(/\*\*(.*?)\*\*/g, "$1")
-      .replace(/\*/g, "")
-      .replace(/\[.*?\]/g, "")
-      .trim();
+  const speak = (text: string, msgIndex?: number) => {
+    if (!text || isMutedRef.current) return;
+
+    // Clean up previous speech
+    stopSpeaking();
 
     setIsSpeaking(true);
-    speakStandardMaleAiVoice(cleanText);
+    setSpeakingMessageIndex(msgIndex ?? null);
+
+    speakAIText({
+      text,
+      settings: voiceSettings,
+      onStart: () => {
+        setIsSpeaking(true);
+        setAudioAutoplayBlocked(false);
+      },
+      onEnd: () => {
+        setIsSpeaking(false);
+        setSpeakingMessageIndex(null);
+      },
+      onError: (err) => {
+        setIsSpeaking(false);
+        setSpeakingMessageIndex(null);
+        if (err && String(err).includes("not-allowed")) {
+          setAudioAutoplayBlocked(true);
+        }
+      },
+    });
   };
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -464,13 +454,21 @@ export default function InterviewChatPage() {
           setHasPromptedAudioCheck(false);
           const lastMsg = data.history[data.history.length - 1];
           if (lastMsg && lastMsg.role === "system") {
-            speak(lastMsg.content);
+            firstQuestionTextRef.current = lastMsg.content;
+            const isModalOpen = typeof window !== "undefined" && sessionStorage.getItem(`env_checked_${interviewId}`) !== "true";
+            if (!isModalOpen && voiceSettings.autoSpeak) {
+              speak(lastMsg.content);
+            }
           }
         } else if (data.question) {
           setMessages([{ role: "system", content: data.question }]);
           setCurrentQuestionId(data.questionId);
           setHasPromptedAudioCheck(false);
-          speak(data.question);
+          firstQuestionTextRef.current = data.question;
+          const isModalOpen = typeof window !== "undefined" && sessionStorage.getItem(`env_checked_${interviewId}`) !== "true";
+          if (!isModalOpen && voiceSettings.autoSpeak) {
+            speak(data.question);
+          }
         }
       } catch (err) {
         console.error("Failed to fetch initial question:", err);
@@ -481,7 +479,7 @@ export default function InterviewChatPage() {
 
     fetchFirstQuestion();
 
-    // Load Face-API models
+    // Load Face-API models safely
     const loadModels = async () => {
       try {
         const MODEL_URL = "https://justadudewhohacks.github.io/face-api.js/models";
@@ -491,61 +489,11 @@ export default function InterviewChatPage() {
         ]);
         setModelsLoaded(true);
       } catch (err) {
-        console.error("Failed to load face-api models", err);
+        console.warn("Face-api models could not be loaded, continuing without expressions:", err);
+        setModelsLoaded(true); // Don't block candidate from recording
       }
     };
     loadModels();
-
-    // Setup Speech Recognition
-    // @ts-ignore
-    const SpeechRecognition = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition);
-    if (SpeechRecognition) {
-      try {
-        const recognition = new SpeechRecognition();
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.lang = 'en-US';
-        
-        recognition.onresult = (event: any) => {
-          let sessionTranscript = "";
-          for (let i = 0; i < event.results.length; i++) {
-            sessionTranscript += event.results[i][0].transcript;
-          }
-          const fullTranscript = (finalTranscriptRef.current + " " + sessionTranscript).trim();
-          setTranscript(fullTranscript);
-
-          // Auto-submit after 5 seconds of silence if at least 3 words spoken
-          if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-          const wordCount = fullTranscript.trim().split(/\s+/).filter(Boolean).length;
-          silenceTimerRef.current = setTimeout(() => {
-            if (isRecordingRef.current && wordCount >= 3) {
-              document.getElementById("submit-answer-btn")?.click();
-            }
-          }, 5000);
-        };
-
-        recognition.onerror = (event: any) => {
-          console.warn("SpeechRecognition note:", event.error);
-          // Gracefully fallback to MediaRecorder audio processing
-        };
-
-        recognition.onend = () => {
-          if (isRecordingRef.current) {
-            setTranscript(current => {
-              finalTranscriptRef.current = current;
-              return current;
-            });
-            try {
-              recognition.start();
-            } catch(e) {}
-          }
-        };
-        
-        recognitionRef.current = recognition;
-      } catch (err) {
-        console.warn("SpeechRecognition setup note:", err);
-      }
-    }
   }, [interviewId]);
 
   useEffect(() => {
@@ -554,8 +502,103 @@ export default function InterviewChatPage() {
     }
   }, [messages, transcript]);
 
+  // Dynamic Speech Recognition Session Handler
+  const startSpeechRecognitionSession = () => {
+    if (typeof window === "undefined") return null;
+    // @ts-ignore
+    const SpeechRecognitionClass = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognitionClass) {
+      console.warn("SpeechRecognition API not available in this browser. Relying on MediaRecorder + server transcription fallback.");
+      return null;
+    }
+
+    try {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.onend = null;
+          recognitionRef.current.onerror = null;
+          recognitionRef.current.abort();
+        } catch (e) {}
+        recognitionRef.current = null;
+      }
+
+      const recognition = new SpeechRecognitionClass();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = "en-US";
+      recognition.maxAlternatives = 1;
+
+      recognition.onresult = (event: any) => {
+        let interim = "";
+        let sessionFinal = "";
+        for (let i = 0; i < event.results.length; i++) {
+          const item = event.results[i];
+          const text = item[0]?.transcript || "";
+          if (item.isFinal) {
+            sessionFinal += (sessionFinal ? " " : "") + text.trim();
+          } else {
+            interim += (interim ? " " : "") + text.trim();
+          }
+        }
+
+        const base = finalTranscriptRef.current ? finalTranscriptRef.current.trim() : "";
+        const combined = [base, sessionFinal, interim].filter(Boolean).join(" ").trim();
+
+        if (combined) {
+          setTranscript(combined);
+          setCurrentAnswer(combined);
+        }
+
+        // Auto-submit after 5 seconds of silence if at least 3 words spoken
+        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+        const wordCount = combined.split(/\s+/).filter(Boolean).length;
+        silenceTimerRef.current = setTimeout(() => {
+          if (isRecordingRef.current && wordCount >= 3) {
+            document.getElementById("submit-answer-btn")?.click();
+          }
+        }, 5000);
+      };
+
+      recognition.onerror = (event: any) => {
+        if (event.error === "no-speech") {
+          // Normal candidate thinking pause — do not abort recording
+          return;
+        }
+        if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+          setMicPermissionError("Microphone access was denied or blocked in browser settings.");
+        }
+        console.warn("SpeechRecognition note:", event.error);
+      };
+
+      recognition.onend = () => {
+        if (isRecordingRef.current) {
+          setTranscript((current) => {
+            if (current) finalTranscriptRef.current = current;
+            return current;
+          });
+          if (recognitionRestartTimeoutRef.current) clearTimeout(recognitionRestartTimeoutRef.current);
+          recognitionRestartTimeoutRef.current = setTimeout(() => {
+            if (isRecordingRef.current) {
+              startSpeechRecognitionSession();
+            }
+          }, 120);
+        }
+      };
+
+      recognition.start();
+      recognitionRef.current = recognition;
+      return recognition;
+    } catch (err) {
+      console.warn("SpeechRecognition setup note:", err);
+      return null;
+    }
+  };
+
   const startRecording = async () => {
-    if (isSpeaking || isTranscribing) return; // Privilege locked while AI is speaking question or transcribing
+    if (isTranscribing) return;
+    if (isSpeaking) {
+      stopSpeaking();
+    }
     setMicPermissionError(null);
     finalTranscriptRef.current = "";
     setTranscript("");
@@ -576,6 +619,7 @@ export default function InterviewChatPage() {
         },
       });
       activeMicStreamRef.current = stream;
+      setActiveMicStream(stream);
 
       // Initialize Universal MediaRecorder Fallback for ALL browsers
       audioChunksRef.current = [];
@@ -606,9 +650,8 @@ export default function InterviewChatPage() {
       return;
     }
     
-    if (recognitionRef.current) {
-      try { recognitionRef.current.start(); } catch(e) {}
-    }
+    // Start Web Speech Recognition session
+    startSpeechRecognitionSession();
 
     intervalRef.current = setInterval(async () => {
       if (webcamRef.current && webcamRef.current.video && webcamRef.current.video.readyState === 4) {
@@ -730,16 +773,31 @@ export default function InterviewChatPage() {
     setIsRecording(false);
     isRecordingRef.current = false;
     setCurrentExpressions(null);
-    if (recognitionRef.current) {
-      try { recognitionRef.current.stop(); } catch(e) {}
-    }
-    if (intervalRef.current) clearInterval(intervalRef.current);
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    if (recognitionRestartTimeoutRef.current) clearTimeout(recognitionRestartTimeoutRef.current);
+    if (intervalRef.current) clearInterval(intervalRef.current);
 
-    // Stop MediaRecorder
+    // Stop Web Speech Recognition cleanly
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.onend = null;
+        recognitionRef.current.onerror = null;
+        recognitionRef.current.stop();
+      } catch (e) {}
+      recognitionRef.current = null;
+    }
+
+    // Stop MediaRecorder and wait for final audio chunks
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== "inactive") {
-      try { recorder.stop(); } catch(e) {}
+      await new Promise<void>((resolve) => {
+        recorder.onstop = () => resolve();
+        try {
+          recorder.stop();
+        } catch (e) {
+          resolve();
+        }
+      });
     }
     mediaRecorderRef.current = null;
 
@@ -747,12 +805,10 @@ export default function InterviewChatPage() {
     if (activeMicStreamRef.current) {
       activeMicStreamRef.current.getTracks().forEach((t) => t.stop());
       activeMicStreamRef.current = null;
+      setActiveMicStream(null);
     }
 
-    // Wait briefly for last audio chunk
-    await new Promise((res) => setTimeout(res, 250));
-    
-    const nativeText = (finalTranscriptRef.current || transcript).trim();
+    const nativeText = (finalTranscriptRef.current || transcript || currentAnswer).trim();
     if (nativeText.length > 0) {
       setCurrentAnswer(nativeText);
       setTranscript(nativeText);
@@ -764,7 +820,7 @@ export default function InterviewChatPage() {
       const mimeType = recorder?.mimeType || "audio/webm";
       const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
 
-      if (audioBlob.size > 1000) {
+      if (audioBlob.size > 200) {
         setIsTranscribing(true);
         try {
           const formData = new FormData();
@@ -776,10 +832,11 @@ export default function InterviewChatPage() {
           });
 
           const data = await res.json();
-          if (res.ok && data.transcript) {
+          if (res.ok && data.transcript && data.transcript.trim()) {
             const serverText = data.transcript.trim();
             setTranscript(serverText);
             setCurrentAnswer(serverText);
+            return;
           }
         } catch (err) {
           console.error("Server audio transcription error:", err);
@@ -788,6 +845,8 @@ export default function InterviewChatPage() {
         }
       }
     }
+
+    setMicPermissionError("No spoken words were heard. Please speak clearly into the microphone or type your answer below.");
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -863,13 +922,17 @@ export default function InterviewChatPage() {
           ...prev, 
           { role: "system", content: endMsg }
         ]);
-        speak(endMsg);
+        if (voiceSettings.autoSpeak) {
+          speak(endMsg);
+        }
       } else if (data.question) {
         playQuestionSound();
         setMessages((prev) => [...prev, { role: "system", content: data.question }]);
         setCurrentQuestionId(data.questionId);
         setHasPromptedAudioCheck(false);
-        speak(data.question);
+        if (voiceSettings.autoSpeak) {
+          speak(data.question);
+        }
       }
     } catch (err) {
       console.error("Failed to send answer:", err);
@@ -1341,9 +1404,19 @@ export default function InterviewChatPage() {
             </AnimatePresence>
 
             {isSpeaking ? (
-              <Button className="w-full cursor-not-allowed bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30" disabled>
-                <Volume2 className="w-4 h-4 mr-2 animate-pulse text-amber-500" /> AI Speaking... Please Wait
-              </Button>
+              <div className="space-y-2">
+                <Button className="w-full cursor-not-allowed bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30" disabled>
+                  <Volume2 className="w-4 h-4 mr-2 animate-pulse text-amber-500" /> AI Speaking... Please Wait
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={stopSpeaking}
+                  className="w-full h-8 text-xs border-amber-500/40 text-amber-500 hover:bg-amber-500/10 cursor-pointer flex items-center justify-center gap-1.5"
+                >
+                  <Square className="w-3 h-3 fill-current" /> Stop AI Voice & Answer Now
+                </Button>
+              </div>
             ) : isTranscribing ? (
               <Button className="w-full cursor-not-allowed bg-cyan-500/10 text-cyan-400 border border-cyan-500/30" disabled>
                 <div className="w-4 h-4 mr-2 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" /> Transcribing Voice with AI...
@@ -1355,11 +1428,31 @@ export default function InterviewChatPage() {
                 </Button>
               </motion.div>
             ) : (
-              <motion.div whileHover={!modelsLoaded || loading || completed || isSpeaking ? {} : { scale: 1.02 }} whileTap={!modelsLoaded || loading || completed || isSpeaking ? {} : { scale: 0.98 }}>
-                <Button className="w-full cursor-pointer" onClick={startRecording} disabled={!modelsLoaded || loading || completed || isSpeaking}>
+              <motion.div whileHover={loading || completed ? {} : { scale: 1.02 }} whileTap={loading || completed ? {} : { scale: 0.98 }}>
+                <Button className="w-full cursor-pointer" onClick={startRecording} disabled={loading || completed}>
                   <Mic className="w-4 h-4 mr-2" /> Answer with Voice
                 </Button>
               </motion.div>
+            )}
+
+            {/* Quick Voice Controls */}
+            {!isSpeaking && !isRecording && !loading && !completed && lastSystemMessage && (
+              <div className="mt-3 pt-3 border-t border-border/50 flex items-center justify-between text-xs">
+                <button
+                  type="button"
+                  onClick={() => speak(lastSystemMessage)}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-cyan-400 hover:text-cyan-300 cursor-pointer hover:underline"
+                >
+                  <Volume2 className="w-3.5 h-3.5" /> Replay Question
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsVoiceSettingsOpen(true)}
+                  className="text-[11px] text-muted-foreground hover:text-foreground cursor-pointer flex items-center gap-1"
+                >
+                  <Settings2 className="w-3 h-3" /> Voice Settings
+                </button>
+              </div>
             )}
 
             {micPermissionError && (
@@ -1394,7 +1487,7 @@ export default function InterviewChatPage() {
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
-              <AudioVisualizer isRecording={isRecording} stream={activeMicStreamRef.current} />
+              <AudioVisualizer isRecording={isRecording} stream={activeMicStream} />
               
               {/* Font Size Controls */}
               <div className="flex items-center bg-muted/80 rounded-xl p-1 border border-border">
@@ -1420,6 +1513,18 @@ export default function InterviewChatPage() {
                   <ZoomIn className="w-3.5 h-3.5" />
                 </button>
               </div>
+
+              {/* AI Voice Settings */}
+              <Button
+                onClick={() => setIsVoiceSettingsOpen(true)}
+                variant="outline"
+                size="sm"
+                className="h-8 px-2.5 rounded-xl border-cyan-500/30 text-xs font-semibold hover:bg-cyan-500/10 text-cyan-400 cursor-pointer flex items-center gap-1.5"
+                title="Configure AI Voice Persona & Speed"
+              >
+                <Settings2 className="w-3.5 h-3.5 text-cyan-400" />
+                <span className="hidden sm:inline">Voice Settings</span>
+              </Button>
 
               {/* Mute AI Audio */}
               <Button
@@ -1457,6 +1562,29 @@ export default function InterviewChatPage() {
             ref={scrollRef}
             className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6"
           >
+            {audioAutoplayBlocked && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="p-3.5 rounded-2xl bg-gradient-to-r from-cyan-500/20 via-primary/20 to-cyan-500/10 border border-cyan-500/40 flex items-center justify-between gap-3 shadow-md"
+              >
+                <div className="flex items-center gap-2 text-xs font-semibold text-cyan-400">
+                  <Volume2 className="w-4 h-4 text-cyan-400 animate-pulse shrink-0" />
+                  <span>AI Voice Ready: Click to hear the AI interviewer speak this question</span>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setAudioAutoplayBlocked(false);
+                    if (lastSystemMessage) speak(lastSystemMessage);
+                  }}
+                  className="h-7 text-xs px-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold rounded-lg cursor-pointer"
+                >
+                  ▶ Hear Question Now
+                </Button>
+              </motion.div>
+            )}
+
             {(() => {
               const lastSystemIndex = messages.findLastIndex(m => m.role === 'system');
 
@@ -1490,6 +1618,45 @@ export default function InterviewChatPage() {
                             msg.content
                           )}
                         </div>
+
+                        {msg.role === 'system' && (
+                          <div className="mt-3 pt-2.5 border-t border-border/40 flex items-center justify-between gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (isSpeaking && speakingMessageIndex === index) {
+                                  stopSpeaking();
+                                } else {
+                                  speak(msg.content, index);
+                                }
+                              }}
+                              className={`inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-lg border transition-all cursor-pointer ${
+                                isSpeaking && speakingMessageIndex === index
+                                  ? "bg-amber-500/10 text-amber-500 border-amber-500/30 animate-pulse"
+                                  : "bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-500 dark:text-cyan-400 border-cyan-500/20"
+                              }`}
+                              title={isSpeaking && speakingMessageIndex === index ? "Stop voice" : "Listen to question voice"}
+                            >
+                              {isSpeaking && speakingMessageIndex === index ? (
+                                <>
+                                  <Square className="w-3 h-3 fill-current" /> Stop Voice
+                                </>
+                              ) : (
+                                <>
+                                  <Volume2 className="w-3 h-3" /> Listen to AI Voice
+                                </>
+                              )}
+                            </button>
+
+                            {isSpeaking && speakingMessageIndex === index && (
+                              <div className="flex items-center gap-1 text-[10px] text-cyan-400 font-mono">
+                                <span className="inline-block w-1 h-2.5 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                                <span className="inline-block w-1 h-3.5 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                                <span className="inline-block w-1 h-2 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </motion.div>
@@ -1537,6 +1704,14 @@ export default function InterviewChatPage() {
                   <Volume2 className="w-4 h-4 text-cyan-500 animate-pulse shrink-0" />
                   <span>AI Interviewer is currently asking the question... Answer privileges will unlock automatically once AI finishes speaking.</span>
                 </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={stopSpeaking}
+                  className="h-6 text-[11px] px-2.5 border-cyan-500/40 text-cyan-400 hover:bg-cyan-500/20 cursor-pointer shrink-0 ml-2 font-medium"
+                >
+                  Skip & Answer Now
+                </Button>
               </div>
             )}
             {isCodingRound && !isSpeaking && (
@@ -1792,6 +1967,13 @@ export default function InterviewChatPage() {
 
         </motion.div>
       </motion.div>
+
+      <AIVoiceSettings
+        isOpen={isVoiceSettingsOpen}
+        onClose={() => setIsVoiceSettingsOpen(false)}
+        settings={voiceSettings}
+        onUpdateSettings={setVoiceSettings}
+      />
     </>
   );
 }

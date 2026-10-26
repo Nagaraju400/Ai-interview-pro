@@ -112,12 +112,20 @@ export default function ResumePage() {
 
       setSuccess(true);
 
-      if (data.resume?.parsedData) {
+      if (data.resume) {
         try {
           const parsed = typeof data.resume.parsedData === "string" 
             ? JSON.parse(data.resume.parsedData) 
             : data.resume.parsedData;
           setParsedData(parsed);
+
+          const candidateProfile = {
+            id: data.resume.id || `res_${Date.now()}`,
+            fileUrl: data.resume.fileUrl || file.name,
+            createdAt: data.resume.createdAt || new Date().toISOString(),
+            parsedData: parsed,
+          };
+          localStorage.setItem("candidate_resume", JSON.stringify(candidateProfile));
         } catch {
           setParsedData(null);
         }
