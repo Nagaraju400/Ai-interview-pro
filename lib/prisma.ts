@@ -11,8 +11,17 @@ const getPrismaClient = () => {
     return globalForPrisma.prisma;
   }
 
-  const connectionString = process.env.DATABASE_URL || process.env.DIRECT_URL || 'postgresql://placeholder:placeholder@localhost:5432/placeholder';
+  const rawConnectionString = process.env.DATABASE_URL || process.env.DIRECT_URL || 'postgresql://placeholder:placeholder@localhost:5432/placeholder';
   
+  let connectionString = rawConnectionString;
+  try {
+    const parsed = new URL(rawConnectionString);
+    parsed.searchParams.delete('sslmode');
+    connectionString = parsed.toString();
+  } catch {
+    // Keep raw if invalid URL format
+  }
+
   const pool = new pg.Pool({
     connectionString,
     ssl: { rejectUnauthorized: false },

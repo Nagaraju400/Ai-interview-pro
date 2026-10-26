@@ -32,10 +32,22 @@ async function extractTextFromPDF(buffer: Buffer): Promise<string> {
   // Method 1: Try pdf-parse first (Fastest and most robust for Vercel Serverless)
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const pdfParse = require("pdf-parse");
-    const parsed = await pdfParse(buffer);
-    if (parsed?.text && parsed.text.trim().length > 20) {
-      return parsed.text;
+    const pdfParseModule = require("pdf-parse");
+    let text = "";
+    if (typeof pdfParseModule === "function") {
+      const parsed = await pdfParseModule(buffer);
+      text = parsed?.text || "";
+    } else if (pdfParseModule?.PDFParse) {
+      const parser = new pdfParseModule.PDFParse({ data: buffer });
+      const parsed = await parser.getText();
+      await parser.destroy?.().catch(() => {});
+      text = parsed?.text || "";
+    } else if (typeof pdfParseModule?.default === "function") {
+      const parsed = await pdfParseModule.default(buffer);
+      text = parsed?.text || "";
+    }
+    if (text && text.trim().length > 20) {
+      return text;
     }
   } catch (e) {
     console.warn("pdf-parse parser note:", e);

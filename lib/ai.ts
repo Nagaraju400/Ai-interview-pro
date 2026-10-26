@@ -6,11 +6,20 @@ import { OpenAI } from "openai";
  * Fallbacks ensure 100% continuous service even if a specific tier experiences high demand (503) or rate limits (429).
  */
 const GEMINI_MODELS = [
+  "gemini-3-flash-preview",
   "gemini-3.5-flash",
-  "gemini-2.5-flash",
-  "gemini-2.0-flash",
-  "gemini-1.5-flash",
-  "gemini-1.5-pro",
+  "gemini-flash-latest",
+  "gemini-3.8-flash",
+  "gemini-2.5-pro",
+  "gemini-pro-latest",
+];
+
+const GROQ_MODELS = [
+  "openai/gpt-oss-120b",
+  "qwen/qwen3.8-27b",
+  "openai/gpt-oss-20b",
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant",
 ];
 
 interface GenerateContentParams {
@@ -136,7 +145,9 @@ export async function generateGroqContent(
     apiKey: keyToUse,
   });
 
-  const modelName = params.model || "llama-3.3-70b-versatile";
+  const modelsToTry = params.model
+    ? [params.model, ...GROQ_MODELS.filter((m) => m !== params.model)]
+    : GROQ_MODELS;
 
   const messages: any[] = [];
   if (params.systemInstruction) {
@@ -149,14 +160,25 @@ export async function generateGroqContent(
     extraConfig.response_format = { type: "json_object" };
   }
 
-  const response = await openai.chat.completions.create({
-    model: modelName,
-    max_tokens: 1024,
-    messages,
-    ...extraConfig,
-  });
+  let lastError: any = null;
+  for (const modelName of modelsToTry) {
+    try {
+      const response = await openai.chat.completions.create({
+        model: modelName,
+        max_tokens: 2048,
+        messages,
+        ...extraConfig,
+      });
 
-  return response.choices[0]?.message?.content || "";
+      const content = response.choices[0]?.message?.content || "";
+      if (content) return content;
+    } catch (err: any) {
+      lastError = err;
+      console.warn(`Groq AI note: Model '${modelName}' failed (${err?.message || err}). Trying next model...`);
+    }
+  }
+
+  throw lastError || new Error("All Groq models failed to respond.");
 }
 
 /**
@@ -212,7 +234,6 @@ export async function generateSmartAIContent(params: SmartAIParams): Promise<str
           contents: params.contents,
           systemInstruction: params.systemInstruction,
           responseMimeType: params.responseMimeType,
-          model: "llama-3.3-70b-versatile",
         });
       } catch (err: any) {
         lastError = err;
