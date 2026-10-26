@@ -78,7 +78,9 @@ export function PricingCard({
           router.push('/login');
           return;
         }
-        throw new Error('Network response was not ok');
+        const errData = await response.json().catch(() => null);
+        const errorMsg = errData?.error || errData?.message || 'Payment service error. Please try again.';
+        throw new Error(errorMsg);
       }
 
       const data = await response.json();
@@ -126,9 +128,9 @@ export function PricingCard({
         });
         rzp.open();
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error redirecting to checkout", error);
-      alert("Something went wrong. Please try again.");
+      alert(error?.message || "Something went wrong. Please try again.");
     } finally {
       setIsLoading(false);
     }

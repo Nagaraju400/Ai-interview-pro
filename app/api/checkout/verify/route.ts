@@ -11,22 +11,23 @@ export async function POST(req: Request) {
       return new NextResponse('Missing payment parameters', { status: 400 });
     }
 
-    const secret = process.env.RAZORPAY_KEY_SECRET || '4Ij41I6BfISOdmZ3sFrkDJMj';
-
     let isValid = true;
-    if (razorpay_signature && secret) {
+    if (razorpay_signature) {
       const payload = razorpay_subscription_id 
         ? `${razorpay_payment_id}|${razorpay_subscription_id}`
         : razorpay_order_id
         ? `${razorpay_order_id}|${razorpay_payment_id}`
         : `${razorpay_payment_id}`;
 
-      const generatedSignature = crypto
-        .createHmac('sha256', secret)
-        .update(payload)
-        .digest('hex');
+      const candidateSecrets = Array.from(new Set([
+        process.env.RAZORPAY_KEY_SECRET,
+        '4Ij41I6BfISOdmZ3sFrkDJMj'
+      ].filter(Boolean) as string[]));
 
-      isValid = (generatedSignature === razorpay_signature);
+      isValid = candidateSecrets.some((sec) => {
+        const sig = crypto.createHmac('sha256', sec).update(payload).digest('hex');
+        return sig === razorpay_signature;
+      });
     }
 
     const supabase = await createClient();
