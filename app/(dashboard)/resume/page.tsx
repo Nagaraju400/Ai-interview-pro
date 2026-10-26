@@ -14,6 +14,7 @@ export default function ResumePage() {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [isRestricted, setIsRestricted] = useState(false);
   const [success, setSuccess] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [parsedData, setParsedData] = useState<{ skills?: string[], experience_years?: number | string, name?: string, education?: string[], experience_details?: string[] } | null>(null);
@@ -87,6 +88,7 @@ export default function ResumePage() {
 
     setLoading(true);
     setError("");
+    setIsRestricted(false);
     setSuccess(false);
     setParsedData(null);
 
@@ -102,7 +104,10 @@ export default function ResumePage() {
       const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.message || "Failed to upload and validate resume file.");
+        if (data.error === "INAPPROPRIATE_CONTENT" || data.error === "INVALID_RESUME" || data.isResume === false) {
+          setIsRestricted(true);
+        }
+        throw new Error(data.message || data.error || "Failed to upload and validate resume file.");
       }
 
       setSuccess(true);
@@ -173,18 +178,33 @@ export default function ResumePage() {
             </div>
 
             {error && (
-              <div className="p-4 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive text-sm font-medium space-y-2 animate-in fade-in">
-                <div className="flex items-center space-x-2 font-semibold text-red-600 dark:text-red-400">
-                  <FileX className="h-5 w-5 shrink-0" />
-                  <span>Document Restricted / Interview Setup Blocked</span>
+              <div className={`p-4 rounded-xl border text-sm font-medium space-y-2 animate-in fade-in ${
+                isRestricted 
+                  ? "bg-destructive/10 border-destructive/30 text-destructive"
+                  : "bg-amber-500/10 border-amber-500/30 text-amber-800 dark:text-amber-200"
+              }`}>
+                <div className="flex items-center space-x-2 font-semibold">
+                  {isRestricted ? (
+                    <>
+                      <FileX className="h-5 w-5 shrink-0 text-red-600 dark:text-red-400" />
+                      <span className="text-red-600 dark:text-red-400">Document Restricted / Interview Setup Blocked</span>
+                    </>
+                  ) : (
+                    <>
+                      <AlertTriangle className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
+                      <span className="text-amber-600 dark:text-amber-400">Notice</span>
+                    </>
+                  )}
                 </div>
-                <p className="text-xs leading-relaxed text-red-700 dark:text-red-300 font-normal">
+                <p className="text-xs leading-relaxed font-normal">
                   {error}
                 </p>
-                <div className="flex items-center text-[11px] text-red-600/80 dark:text-red-400/80 pt-2 border-t border-destructive/20 font-medium">
-                  <AlertTriangle className="h-3.5 w-3.5 mr-1.5 shrink-0 text-red-500" />
-                  <span>Interview setup is denied until a valid, appropriate candidate resume PDF is uploaded.</span>
-                </div>
+                {isRestricted && (
+                  <div className="flex items-center text-[11px] text-red-600/80 dark:text-red-400/80 pt-2 border-t border-destructive/20 font-medium">
+                    <AlertTriangle className="h-3.5 w-3.5 mr-1.5 shrink-0 text-red-500" />
+                    <span>Interview setup is denied until a valid, appropriate candidate resume PDF is uploaded.</span>
+                  </div>
+                )}
               </div>
             )}
 
