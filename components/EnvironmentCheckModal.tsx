@@ -8,12 +8,21 @@ import { motion, AnimatePresence } from "framer-motion";
 
 interface EnvironmentCheckModalProps {
   isOpen: boolean;
-  onConfirm: () => void;
+  onConfirm: (photo?: string) => void;
   roleName: string;
   companyName?: string | null;
+  initialPhoto?: string | null;
 }
 
-export function EnvironmentCheckModal({ isOpen, onConfirm, roleName, companyName }: EnvironmentCheckModalProps) {
+export function EnvironmentCheckModal({ isOpen, onConfirm, roleName, companyName, initialPhoto }: EnvironmentCheckModalProps) {
+  const [capturedPhoto, setCapturedPhoto] = useState<string | null>(() => {
+    if (initialPhoto) return initialPhoto;
+    if (typeof window !== "undefined") {
+      return sessionStorage.getItem("candidate_reference_photo");
+    }
+    return null;
+  });
+
   const [checkedItems, setCheckedItems] = useState({
     quietSpace: false,
     cleanBackground: false,
@@ -123,6 +132,34 @@ export function EnvironmentCheckModal({ isOpen, onConfirm, roleName, companyName
     });
   };
 
+  const captureCandidatePhoto = () => {
+    if (webcamRef.current) {
+      const screenshot = webcamRef.current.getScreenshot();
+      if (screenshot) {
+        setCapturedPhoto(screenshot);
+        if (typeof window !== "undefined") {
+          sessionStorage.setItem("candidate_reference_photo", screenshot);
+        }
+        setCheckedItems(prev => ({
+          ...prev,
+          singlePerson: true,
+          hardwareWorking: true,
+        }));
+      }
+    }
+  };
+
+  const handleConfirm = () => {
+    let photo = capturedPhoto;
+    if (!photo && webcamRef.current) {
+      photo = webcamRef.current.getScreenshot() || null;
+      if (photo && typeof window !== "undefined") {
+        sessionStorage.setItem("candidate_reference_photo", photo);
+      }
+    }
+    onConfirm(photo || undefined);
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -157,7 +194,7 @@ export function EnvironmentCheckModal({ isOpen, onConfirm, roleName, companyName
                 <Sparkles className="w-3.5 h-3.5" /> Mandated Protocol
               </span>
               <button
-                onClick={onConfirm}
+                onClick={handleConfirm}
                 className="p-1 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
                 title="Close modal"
               >
@@ -183,8 +220,50 @@ export function EnvironmentCheckModal({ isOpen, onConfirm, roleName, companyName
                   <span className="text-[10px] text-gray-300">Clean Background Check</span>
                 </div>
               </div>
+
+              {/* Photo Registration Card */}
+              <div className="pt-1">
+                {capturedPhoto ? (
+                  <div className="flex items-center gap-2.5 p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-foreground">
+                    <img
+                      src={capturedPhoto}
+                      alt="Candidate ID"
+                      className="w-10 h-10 rounded-lg object-cover border border-emerald-500/40 shadow-xs"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> ID Photo Registered
+                      </p>
+                      <p className="text-[10px] text-muted-foreground truncate">
+                        Used for live anti-impersonation tracking
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={captureCandidatePhoto}
+                      className="h-7 text-[10px] px-2 text-muted-foreground hover:text-foreground cursor-pointer"
+                    >
+                      Retake
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={captureCandidatePhoto}
+                    className="w-full h-9 text-xs font-semibold bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 flex items-center justify-center gap-2 cursor-pointer shadow-xs"
+                  >
+                    <Camera className="w-4 h-4" />
+                    Register Candidate Identity Photo
+                  </Button>
+                )}
+              </div>
+
               <p className="text-[11px] text-muted-foreground text-center">
-                Check your background framing, lighting, and camera positioning before entering.
+                Face the camera directly. Your photo registers your identity for the interview session.
               </p>
             </div>
 
@@ -346,7 +425,7 @@ export function EnvironmentCheckModal({ isOpen, onConfirm, roleName, companyName
               Select All Rules
             </Button>
             <Button
-              onClick={onConfirm}
+              onClick={handleConfirm}
               disabled={!allChecked}
               className="w-full sm:w-auto px-8 h-11 text-sm font-semibold rounded-full shadow-lg shadow-primary/20 cursor-pointer"
             >

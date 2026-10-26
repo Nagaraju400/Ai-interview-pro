@@ -239,8 +239,25 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: "No file uploaded" }, { status: 400 });
     }
 
+    const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB maximum limit
+    if (file.size > MAX_FILE_SIZE) {
+      return NextResponse.json(
+        { 
+          message: `File size restricted: Uploaded document (${(file.size / (1024 * 1024)).toFixed(1)} MB) exceeds the 5 MB maximum limit. Please upload a compressed or smaller PDF resume.` 
+        },
+        { status: 400 }
+      );
+    }
+
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
+
+    if (buffer.length > MAX_FILE_SIZE) {
+      return NextResponse.json(
+        { message: "File buffer exceeds the 5 MB maximum limit. Please upload a smaller PDF resume." },
+        { status: 400 }
+      );
+    }
 
     let resumeText = "";
     try {

@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Bot, User, Send, StopCircle, Code2, Mic, Activity, Clock, Building2, Volume2, VolumeX, ArrowDown, ShieldAlert, Play, Terminal, AlertTriangle, ZoomIn, ZoomOut, Maximize2, Minimize2, Expand, Shrink, Text } from "lucide-react";
+import { Bot, User, Send, StopCircle, Code2, Mic, Activity, Clock, Building2, Volume2, VolumeX, ArrowDown, ShieldAlert, Play, Terminal, AlertTriangle, ZoomIn, ZoomOut, Maximize2, Minimize2, Expand, Shrink, Text, Camera, CheckCircle2, UserCheck, UserX } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import { AIAvatar } from "@/components/AIAvatar";
@@ -13,6 +13,7 @@ import { AudioVisualizer } from "@/components/AudioVisualizer";
 import { TypewriterText } from "@/components/TypewriterText";
 import { SpellCheckKeywords } from "@/components/SpellCheckKeywords";
 import { playSubmitSound, playQuestionSound } from "@/lib/sounds";
+import { verifyCandidateIdentity } from "@/utils/face-comparison";
 
 import Editor from "react-simple-code-editor";
 import Prism from "prismjs";
@@ -94,11 +95,45 @@ export default function InterviewChatPage() {
     return true;
   });
 
-  const handleConfirmEnvCheck = () => {
+  const [candidatePhoto, setCandidatePhoto] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      return sessionStorage.getItem(`candidate_photo_${interviewId}`) || sessionStorage.getItem("candidate_reference_photo") || null;
+    }
+    return null;
+  });
+  const candidatePhotoRef = useRef<string | null>(candidatePhoto);
+  const [identityStatus, setIdentityStatus] = useState<"MATCH" | "MISMATCH" | "UNCERTAIN" | "NO_FACE" | "MULTIPLE">("MATCH");
+  const [identitySimilarity, setIdentitySimilarity] = useState<number>(98);
+  const [showImpersonationAlert, setShowImpersonationAlert] = useState<boolean>(false);
+  const mismatchCounterRef = useRef<number>(0);
+
+  const handleConfirmEnvCheck = (photo?: string) => {
     if (typeof window !== "undefined" && interviewId) {
       sessionStorage.setItem(`env_checked_${interviewId}`, "true");
+      if (photo) {
+        sessionStorage.setItem(`candidate_photo_${interviewId}`, photo);
+        setCandidatePhoto(photo);
+        candidatePhotoRef.current = photo;
+      }
     }
     setShowEnvCheckModal(false);
+  };
+
+  const recaptureCandidatePhoto = () => {
+    if (webcamRef.current) {
+      const snap = webcamRef.current.getScreenshot();
+      if (snap) {
+        setCandidatePhoto(snap);
+        candidatePhotoRef.current = snap;
+        if (typeof window !== "undefined") {
+          sessionStorage.setItem(`candidate_photo_${interviewId}`, snap);
+        }
+        setShowImpersonationAlert(false);
+        mismatchCounterRef.current = 0;
+        setIdentityStatus("MATCH");
+        setIdentitySimilarity(99);
+      }
+    }
   };
   const [detectedFaceCount, setDetectedFaceCount] = useState<number>(1);
   const [selectedLanguage, setSelectedLanguage] = useState("javascript");
@@ -582,6 +617,18 @@ export default function InterviewChatPage() {
         
         setDetectedFaceCount(allDetections.length);
 
+        // Auto-register candidate reference photo if missing
+        if (!candidatePhotoRef.current && allDetections.length === 1) {
+          const autoSnap = webcamRef.current.getScreenshot();
+          if (autoSnap) {
+            candidatePhotoRef.current = autoSnap;
+            setCandidatePhoto(autoSnap);
+            if (typeof window !== "undefined") {
+              sessionStorage.setItem(`candidate_photo_${interviewId}`, autoSnap);
+            }
+          }
+        }
+
         if (allDetections.length > 0) {
           const primaryFace = allDetections[0];
           setCurrentExpressions({
@@ -601,12 +648,83 @@ export default function InterviewChatPage() {
             surprised: prev.surprised + primaryFace.expressions.surprised,
           }));
           setFrameCounts(prev => prev + 1);
+
+          // Track candidate identity (same vs different person)
+          if (candidatePhotoRef.current && allDetections.length === 1) {
+            try {
+              const res = await verifyCandidateIdentity(candidatePhotoRef.current, video, (primaryFace as any)?.detection?.box);
+              setIdentitySimilarity(res.similarity);
+              if (res.status === "MISMATCH") {
+                mismatchCounterRef.current += 1;
+                if (mismatchCounterRef.current >= 3) {
+                  setIdentityStatus("MISMATCH");
+                  setShowImpersonationAlert(true);
+                }
+              } else {
+                mismatchCounterRef.current = 0;
+                setShowImpersonationAlert(false);
+                setIdentityStatus(res.status);
+              }
+            } catch (err) {}
+          } else if (allDetections.length > 1) {
+            setIdentityStatus("MULTIPLE");
+          }
         } else {
           setCurrentExpressions(null);
+          setIdentityStatus("NO_FACE");
         }
       }
     }, 1000);
   };
+
+  // Continuous Anti-Impersonation & Candidate Face Tracking Loop
+  useEffect(() => {
+    if (!modelsLoaded || completed || isRecording) return;
+
+    const proctorInterval = setInterval(async () => {
+      if (webcamRef.current && webcamRef.current.video && webcamRef.current.video.readyState === 4) {
+        const video = webcamRef.current.video;
+        try {
+          const allDetections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions());
+          setDetectedFaceCount(allDetections.length);
+
+          if (!candidatePhotoRef.current && allDetections.length === 1) {
+            const autoSnap = webcamRef.current.getScreenshot();
+            if (autoSnap) {
+              candidatePhotoRef.current = autoSnap;
+              setCandidatePhoto(autoSnap);
+              if (typeof window !== "undefined") {
+                sessionStorage.setItem(`candidate_photo_${interviewId}`, autoSnap);
+              }
+            }
+          }
+
+          if (allDetections.length === 1 && candidatePhotoRef.current) {
+            const primaryFace = allDetections[0];
+            const res = await verifyCandidateIdentity(candidatePhotoRef.current, video, (primaryFace as any)?.detection?.box);
+            setIdentitySimilarity(res.similarity);
+            if (res.status === "MISMATCH") {
+              mismatchCounterRef.current += 1;
+              if (mismatchCounterRef.current >= 3) {
+                setIdentityStatus("MISMATCH");
+                setShowImpersonationAlert(true);
+              }
+            } else {
+              mismatchCounterRef.current = 0;
+              setShowImpersonationAlert(false);
+              setIdentityStatus(res.status);
+            }
+          } else if (allDetections.length === 0) {
+            setIdentityStatus("NO_FACE");
+          } else if (allDetections.length > 1) {
+            setIdentityStatus("MULTIPLE");
+          }
+        } catch (e) {}
+      }
+    }, 2000);
+
+    return () => clearInterval(proctorInterval);
+  }, [modelsLoaded, completed, isRecording, interviewId]);
 
   const stopRecording = async () => {
     setIsRecording(false);
@@ -879,7 +997,38 @@ export default function InterviewChatPage() {
         onConfirm={handleConfirmEnvCheck}
         roleName={interviewType}
         companyName={company}
+        initialPhoto={candidatePhoto}
       />
+
+      {/* Floating Anti-Impersonation Alert Banner */}
+      <AnimatePresence>
+        {showImpersonationAlert && (
+          <motion.div
+            initial={{ opacity: 0, y: -40, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -40, scale: 0.95 }}
+            className="fixed top-4 left-1/2 -translate-x-1/2 z-50 max-w-xl w-[92%] bg-red-600 text-white p-4 rounded-2xl shadow-2xl border-2 border-white/40 flex items-center gap-3.5 backdrop-blur-md"
+          >
+            <div className="p-2 rounded-xl bg-white/20 shrink-0">
+              <ShieldAlert className="w-6 h-6 animate-pulse text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="font-bold text-sm">Anti-Impersonation Warning: Different Person Detected</p>
+              <p className="text-xs text-red-100 leading-snug">
+                Face tracking indicates the candidate in front of the camera does not match the registered baseline ID ({identitySimilarity}% match).
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={recaptureCandidatePhoto}
+              className="bg-white/10 hover:bg-white/20 text-white border-white/40 text-xs shrink-0 cursor-pointer"
+            >
+              Update ID Photo
+            </Button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <motion.div 
         variants={containerVariants}
@@ -1068,24 +1217,88 @@ export default function InterviewChatPage() {
               )}
 
               {/* Live Disturbance & Environment Status Overlay */}
-              {isRecording && (
-                <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between">
-                  {detectedFaceCount > 1 ? (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-600/90 text-white font-semibold flex items-center gap-1 animate-pulse shadow">
-                      ⚠️ Multiple Faces Detected
-                    </span>
-                  ) : detectedFaceCount === 0 ? (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-yellow-600/90 text-white font-semibold flex items-center gap-1 shadow">
-                      ⚠️ No Face Detected
-                    </span>
-                  ) : (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-600/90 text-white font-medium flex items-center gap-1 shadow">
-                      🟢 Clean Environment
-                    </span>
-                  )}
+              <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between pointer-events-none">
+                {detectedFaceCount > 1 ? (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-600/90 text-white font-semibold flex items-center gap-1 animate-pulse shadow">
+                    ⚠️ Multiple Faces
+                  </span>
+                ) : detectedFaceCount === 0 ? (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-yellow-600/90 text-white font-semibold flex items-center gap-1 shadow">
+                    ⚠️ No Face Detected
+                  </span>
+                ) : identityStatus === "MISMATCH" ? (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-600 text-white font-bold flex items-center gap-1 animate-pulse shadow">
+                    🚨 Mismatch ({identitySimilarity}%)
+                  </span>
+                ) : (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-600/90 text-white font-medium flex items-center gap-1 shadow">
+                    🟢 ID Verified ({identitySimilarity}%)
+                  </span>
+                )}
+              </div>
+            </motion.div>
+
+          {/* Candidate ID & Anti-Impersonation Proctoring Card */}
+          <div className="bg-card border rounded-2xl p-3.5 shadow-sm space-y-2.5">
+            <div className="flex items-center justify-between pb-2 border-b">
+              <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                <UserCheck className="w-4 h-4 text-primary" /> Identity Proctoring
+              </span>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                identityStatus === "MATCH"
+                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
+                  : identityStatus === "MISMATCH"
+                  ? "bg-red-500/15 text-red-600 dark:text-red-400 border border-red-500/30 animate-pulse"
+                  : "bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20"
+              }`}>
+                {identityStatus === "MATCH" && `✓ Verified (${identitySimilarity}%)`}
+                {identityStatus === "MISMATCH" && "🚨 Impersonation Alert"}
+                {identityStatus === "NO_FACE" && "⚠️ Face Missing"}
+                {identityStatus === "MULTIPLE" && "⚠️ Multiple Persons"}
+                {identityStatus === "UNCERTAIN" && `Evaluating (${identitySimilarity}%)`}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-3">
+              {candidatePhoto ? (
+                <div className="relative group shrink-0">
+                  <img
+                    src={candidatePhoto}
+                    alt="Registered Candidate Photo"
+                    className="w-11 h-11 rounded-xl object-cover border-2 border-primary/30 shadow-xs"
+                  />
+                  <div className="absolute -bottom-1 -right-1 p-0.5 rounded-full bg-emerald-500 text-white shadow-xs">
+                    <CheckCircle2 className="w-3 h-3" />
+                  </div>
+                </div>
+              ) : (
+                <div className="w-11 h-11 rounded-xl bg-muted border flex items-center justify-center text-muted-foreground shrink-0">
+                  <User className="w-5 h-5" />
                 </div>
               )}
-            </motion.div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-semibold text-foreground truncate">
+                  {candidatePhoto ? "Registered Baseline ID" : "Auto-Registering ID..."}
+                </p>
+                <p className="text-[10px] text-muted-foreground leading-tight">
+                  {identityStatus === "MATCH" 
+                    ? "Biometrics match registered photo." 
+                    : identityStatus === "MISMATCH"
+                    ? "Warning: Different person detected!"
+                    : "Continuous proctoring active."}
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={recaptureCandidatePhoto}
+                title="Recapture baseline photo"
+                className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground cursor-pointer shrink-0"
+              >
+                <Camera className="w-4 h-4" />
+              </Button>
+            </div>
+          </div>
           <div className="bg-card border rounded-xl p-4 shadow-sm text-center">
             <h3 className="font-semibold text-sm mb-2 text-foreground">Voice & Expression AI</h3>
             <p className="text-xs text-muted-foreground mb-4">We analyze your facial expressions and tone to provide confidence feedback.</p>

@@ -26,8 +26,9 @@ export default function ResumePage() {
       return false;
     }
 
-    if (selectedFile.size > 10 * 1024 * 1024) {
-      setError("File size exceeds 10 MB limit. Please select a smaller PDF file.");
+    const MAX_SIZE_MB = 5;
+    if (selectedFile.size > MAX_SIZE_MB * 1024 * 1024) {
+      setError(`File size restricted: Uploaded file (${(selectedFile.size / (1024 * 1024)).toFixed(1)} MB) exceeds the ${MAX_SIZE_MB} MB maximum limit. Please select a smaller PDF file.`);
       setFile(null);
       return false;
     }
@@ -163,6 +164,11 @@ export default function ResumePage() {
                 <p className="text-xs text-muted-foreground mt-2 text-center">
                   {file ? file.name : "or drag and drop your PDF resume file here"}
                 </p>
+                <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary/10 border border-primary/20 text-[11px] font-medium text-primary">
+                  <span>PDF Document</span>
+                  <span>&bull;</span>
+                  <span>Max Size: 5 MB</span>
+                </div>
               </div>
             </div>
 
